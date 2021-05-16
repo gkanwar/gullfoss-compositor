@@ -1,0 +1,12 @@
+unstable_features = true
+
+control_brace_style = "ClosingNextLine"
+fn_args_layout = "Compressed"
+newline_style = "Unix"
+normalize_comments = true
+overflow_delimited_expr = true
+reorder_impl_items = true
+tab_spaces = 2
+trailing_comma = "Never"
+wrap_comments = true
+use_small_heuristics = "Off"
