@@ -1,12 +1,19 @@
 const WIDTH: usize = 8;
 const HEIGHT: usize = 8;
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum Color {
   Black,
   White,
 }
-#[derive(Clone, Copy)]
+fn opposite(color: Color) -> Color {
+  match color {
+    Color::Black => Color::White,
+    Color::White => Color::Black,
+  }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum PieceKind {
   Pawn,
   Knight,
@@ -15,18 +22,18 @@ enum PieceKind {
   Queen,
   King,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 struct Piece {
   color: Color,
   kind: PieceKind,
 }
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum SquareContent {
   Empty,
   Filled(Piece),
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 struct BoardState {
   squares: [[SquareContent; HEIGHT]; WIDTH],
 }
@@ -38,6 +45,7 @@ impl BoardState {
   }
 }
 
+#[derive(Debug)]
 struct CastlingState {
   wk: bool,
   wq: bool,
@@ -46,6 +54,7 @@ struct CastlingState {
 }
 type Square = (usize, usize);
 
+#[derive(Debug)]
 struct GameState {
   board: BoardState,
   castling: CastlingState,
@@ -57,19 +66,14 @@ impl GameState {
   fn new() -> Self {
     GameState {
       board: BoardState::new(),
-      castling: CastlingState {
-        wk: true,
-        wq: true,
-        bk: true,
-        bq: true,
-      },
+      castling: CastlingState { wk: true, wq: true, bk: true, bq: true },
       active: Color::White,
       en_passant: None,
     }
   }
 }
 
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 enum Move {
   Normal {
     origin: Square,
@@ -88,7 +92,7 @@ fn in_bounds((x, y): (i32, i32)) -> bool {
   0 <= x && x < (WIDTH as i32) && 0 <= y && y < (HEIGHT as i32)
 }
 
-fn get_pseudolegal_moves(
+fn get_piece_pseudolegal_moves(
   (x, y): (usize, usize), color: Color, kind: PieceKind, board: &BoardState,
 ) -> Vec<Move> {
   let mut moves = Vec::<Move>::new();
@@ -101,84 +105,117 @@ fn get_pseudolegal_moves(
     });
   };
 
+  let check_square_piece = |(xp, yp): (i32, i32)| -> Option<Color> {
+    if let SquareContent::Filled(piece) = board.squares[xp as usize][yp as usize] {
+      return Some(piece.color);
+    }
+    return None;
+  };
+
   // add square if valid, return whether space was free
   let maybe_add_square = |(xp, yp): (i32, i32), moves: &mut Vec<Move>| -> bool {
-    if let SquareContent::Filled(piece) = board.squares[xp as usize][yp as usize] {
-      if piece.color != color {
-        add_normal_move((xp, yp), moves);
+    match check_square_piece((xp, yp)) {
+      Some(piece_color) => {
+        if piece_color != color {
+          add_normal_move((xp, yp), moves);
+        }
+        return false;
       }
-      return false;
+      None => {
+        add_normal_move((xp, yp), moves);
+        return true;
+      }
     }
-    add_normal_move((xp, yp), moves);
-    return true;
   };
 
   let is_occupied = |(x, y): (i32, i32)| -> bool {
     match board.squares[x as usize][y as usize] {
       SquareContent::Filled(_) => true, // TODO
-      Empty => false,
+      SquareContent::Empty => false,
     }
   };
 
   let add_pawn_moves = |moves: &mut Vec<Move>| {
     let sign = match color {
-      White => 1,
-      Black => -1,
+      Color::White => 1,
+      Color::Black => -1,
     };
     let queen_rank: i32 = match color {
-      White => (HEIGHT - 1) as i32,
-      Black => 0,
+      Color::White => (HEIGHT - 1) as i32,
+      Color::Black => 0,
     };
-    if !is_occupied((x, y + sign)) {
+    let push_one_sq = (x, y + sign);
+    let push_two_sq = (x, y + 2 * sign);
+    if in_bounds(push_one_sq) && !is_occupied(push_one_sq) {
       if y + sign != queen_rank {
-        // 1-square push
-        add_normal_move((x, y + sign), moves);
+        add_normal_move(push_one_sq, moves);
       }
       else {
-        // 1-square push to promote
+        // promotion
         for kind in &[PieceKind::Knight, PieceKind::Bishop, PieceKind::Rook, PieceKind::Queen] {
           moves.push(Move::Promote {
             origin: (x as usize, y as usize),
-            target: (x as usize, (y + sign) as usize),
+            target: (push_one_sq.0 as usize, push_one_sq.1 as usize),
             kind: *kind,
           });
         }
       }
-      // 2-square push
-      if y == 1 && !is_occupied((x, y + 2 * sign)) {
-        add_normal_move((x, y + 2 * sign), moves);
+      if y == 1 && !is_occupied(push_two_sq) {
+        add_normal_move(push_two_sq, moves);
       }
     }
     // diagonal captures
-    if in_bounds((x + 1, y + sign)) {
-      maybe_add_square((x + 1, y + sign), moves);
+    let diag_right_sq = (x + 1, y + sign);
+    let diag_left_sq = (x - 1, y + sign);
+    if in_bounds(diag_left_sq) {
+      if let Some(piece_color) = check_square_piece(diag_left_sq) {
+        if piece_color != color {
+          add_normal_move(diag_left_sq, moves);
+        }
+      }
     }
-    if in_bounds((x - 1, y + sign)) {
-      maybe_add_square((x - 1, y + sign), moves);
+    if in_bounds(diag_right_sq) {
+      if let Some(piece_color) = check_square_piece(diag_right_sq) {
+        if piece_color != color {
+          add_normal_move(diag_right_sq, moves);
+        }
+      }
     }
   };
 
   let add_diagonal_moves = |moves: &mut Vec<Move>| {
-    for xp in x + 1..(WIDTH as i32) - 1 {
+    for xp in (x + 1)..((WIDTH as i32) - 1) {
       let yp = y - (x - xp);
+      if !in_bounds((xp, yp)) {
+        break;
+      }
       if !maybe_add_square((xp, yp), moves) {
         break;
       }
     }
-    for xp in x + 1..(WIDTH as i32) - 1 {
+    for xp in (x + 1)..((WIDTH as i32) - 1) {
       let yp = y + (x - xp);
+      if !in_bounds((xp, yp)) {
+        break;
+      }
       if !maybe_add_square((xp, yp), moves) {
         break;
       }
     }
     for xp in (0..x).rev() {
       let yp = y - (x - xp);
+      if !in_bounds((xp, yp)) {
+        break;
+      }
       if !maybe_add_square((xp, yp), moves) {
         break;
       }
     }
     for xp in (0..x).rev() {
       let yp = y + (x - xp);
+      if !in_bounds((xp, yp)) {
+        break;
+      }
       if !maybe_add_square((xp, yp), moves) {
         break;
       }
@@ -214,7 +251,7 @@ fn get_pseudolegal_moves(
     for (dx, dy) in KNIGHT_OFFSETS.iter() {
       let square = (x + dx, y + dy);
       if in_bounds(square) {
-        add_normal_move(square, moves);
+        maybe_add_square(square, moves);
       }
     }
   };
@@ -225,29 +262,29 @@ fn get_pseudolegal_moves(
     for (dx, dy) in KING_OFFSETS.iter() {
       let square = ((x as i32) + dx, (y as i32) + dy);
       if in_bounds(square) {
-        add_normal_move(square, moves);
+        maybe_add_square(square, moves);
       }
     }
   };
 
   match kind {
-    Pawn => {
+    PieceKind::Pawn => {
       add_pawn_moves(&mut moves);
     }
-    Knight => {
+    PieceKind::Knight => {
       add_knight_moves(&mut moves);
     }
-    Bishop => {
+    PieceKind::Bishop => {
       add_diagonal_moves(&mut moves);
     }
-    Rook => {
+    PieceKind::Rook => {
       add_cardinal_moves(&mut moves);
     }
-    Queen => {
+    PieceKind::Queen => {
       add_diagonal_moves(&mut moves);
       add_cardinal_moves(&mut moves);
     }
-    King => {
+    PieceKind::King => {
       add_king_moves(&mut moves);
       // TODO: castling
     }
@@ -259,24 +296,15 @@ fn apply_move(m: &Move, bs: &BoardState) -> BoardState {
   let mut bs2 = bs.clone();
   let squares = &mut bs2.squares;
   match m {
-    Move::Normal {
-      origin,
-      target,
-    } => {
+    Move::Normal { origin, target } => {
       squares[target.0][target.1] = squares[origin.0][origin.1];
       squares[origin.0][origin.1] = SquareContent::Empty;
     }
-    Move::Promote {
-      origin,
-      target,
-      kind,
-    } => {
+    Move::Promote { origin, target, kind } => {
       squares[target.0][target.1] = squares[origin.0][origin.1];
       if let SquareContent::Filled(piece) = squares[target.0][target.1] {
-        squares[target.0][target.1] = SquareContent::Filled(Piece {
-          color: piece.color,
-          kind: *kind,
-        });
+        squares[target.0][target.1] =
+          SquareContent::Filled(Piece { color: piece.color, kind: *kind });
       }
       else {
         panic!("Promotion from an empty square");
@@ -284,33 +312,56 @@ fn apply_move(m: &Move, bs: &BoardState) -> BoardState {
       squares[origin.0][origin.1] = SquareContent::Empty;
     }
     // TODO: castling
-    CastleK => {
+    Move::CastleK => {
       unimplemented!();
     }
-    CastleQ => {
+    Move::CastleQ => {
       unimplemented!();
     }
   }
   return bs2;
 }
 
-fn get_legal_moves(gs: &GameState) {
-  for (i, row) in gs.board.squares.iter().enumerate() {
+fn get_pseudolegal_moves(board: &BoardState, active: Color) -> Vec<Move> {
+  let mut moves = Vec::<Move>::new();
+  for (i, row) in board.squares.iter().enumerate() {
     for (j, sq) in row.iter().enumerate() {
-      if let SquareContent::Filled(Piece {
-        color,
-        kind,
-      }) = sq
-      {
-        if *color != gs.active {
+      if let SquareContent::Filled(Piece { color, kind }) = sq {
+        if *color != active {
           continue;
         }
-        for m in get_pseudolegal_moves((i, j), *color, *kind, &gs.board) {
-          // TODO: filter down by checking for exposure to checks
-        }
+        moves.extend(get_piece_pseudolegal_moves((i, j), *color, *kind, &board).iter().cloned());
       }
     }
   }
+  return moves;
+}
+
+fn in_check(board: &BoardState, color: Color) -> bool {
+  for m in get_pseudolegal_moves(board, opposite(color)) {
+    match m {
+      Move::Normal { origin, target } => {
+        if let SquareContent::Filled(piece) = board.squares[target.0][target.1] {
+          if piece.color == color && piece.kind == PieceKind::King {
+            return true;
+          }
+        }
+      }
+      _ => {}
+    }
+  }
+  return false;
+}
+
+fn get_legal_moves(gs: &GameState) -> Vec<Move> {
+  return get_pseudolegal_moves(&gs.board, gs.active)
+    .iter()
+    .filter(|m| {
+      let bs2 = apply_move(m, &gs.board);
+      return !in_check(&bs2, gs.active);
+    })
+    .cloned()
+    .collect();
 }
 
 fn parse_fen_board(board_str: &str) -> Result<BoardState, &'static str> {
@@ -326,7 +377,7 @@ fn parse_fen_board(board_str: &str) -> Result<BoardState, &'static str> {
         if j + 1 > WIDTH {
           return Err("Too many squares in FEN board row");
         }
-        board_state.squares[i][j] = SquareContent::Filled(match c {
+        board_state.squares[j][HEIGHT - i - 1] = SquareContent::Filled(match c {
           'p' => Piece {
             color: Color::Black,
             kind: PieceKind::Pawn,
@@ -388,7 +439,9 @@ fn parse_fen_board(board_str: &str) -> Result<BoardState, &'static str> {
             if j + num_spaces > WIDTH {
               return Err("Too many squares in FEN board row");
             }
-            board_state.squares[i][j..j + num_spaces].fill(SquareContent::Empty);
+            for k in j..j + num_spaces {
+              board_state.squares[k][HEIGHT - i - 1] = SquareContent::Empty;
+            }
             j += num_spaces;
           }
           Err(_) => {
@@ -525,6 +578,14 @@ mod tests {
       parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
     let gs: GameState =
       parse_fen("rnbqkbnr/pp1ppppp/8/2p5/4P3/5N2/PPPP1PPP/RNBQKB1R b KQkq - 1 2").unwrap();
+  }
+
+  #[test]
+  fn test_legal_moves() {
+    let gs: GameState =
+      parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+    let m = get_legal_moves(&gs);
+    assert_eq!(m.len(), 20);
   }
 }
 
