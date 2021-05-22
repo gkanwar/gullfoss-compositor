@@ -1,5 +1,5 @@
 [package]
-name = "compositor"
+name = "gf-compositor"
 version = "0.1.0"
 authors = ["Gurtej Kanwar <gurtejkanwar@gmail.com>"]
 edition = "2018"
