@@ -1,5 +1,8 @@
 const WIDTH: usize = 8;
 const HEIGHT: usize = 8;
+const QROOK_FILE: usize = 0;
+const KROOK_FILE: usize = WIDTH - 1;
+const KING_FILE: usize = 4;
 
 #[derive(Clone, Copy, Debug, PartialEq)]
 enum Color {
@@ -52,6 +55,12 @@ struct CastlingState {
   bk: bool,
   bq: bool,
 }
+impl CastlingState {
+  fn new() -> Self {
+    CastlingState { wk: true, wq: true, bk: true, bq: true }
+  }
+}
+
 type Square = (usize, usize);
 
 #[derive(Debug)]
@@ -66,7 +75,7 @@ impl GameState {
   fn new() -> Self {
     GameState {
       board: BoardState::new(),
-      castling: CastlingState { wk: true, wq: true, bk: true, bq: true },
+      castling: CastlingState::new(),
       active: Color::White,
       en_passant: None,
     }
@@ -84,19 +93,31 @@ enum Move {
     target: Square,
     kind: PieceKind,
   },
-  CastleK,
-  CastleQ,
+  CastleK(Color),
+  CastleQ(Color),
 }
 
 fn in_bounds((x, y): (i32, i32)) -> bool {
   0 <= x && x < (WIDTH as i32) && 0 <= y && y < (HEIGHT as i32)
 }
 
+fn is_occupied((x, y): (i32, i32), board: &BoardState) -> bool {
+  match board.squares[x as usize][y as usize] {
+    SquareContent::Filled(_) => true, // TODO
+    SquareContent::Empty => false,
+  }
+}
+
 fn get_piece_pseudolegal_moves(
   (x, y): (usize, usize), color: Color, kind: PieceKind, board: &BoardState,
+  en_passant: Option<Square>,
 ) -> Vec<Move> {
   let mut moves = Vec::<Move>::new();
   let (x, y) = (x as i32, y as i32);
+  let en_passant = match en_passant {
+    Some(square) => Some((square.0 as i32, square.1 as i32)),
+    None => None,
+  };
 
   let add_normal_move = |(xp, yp): (i32, i32), moves: &mut Vec<Move>| {
     moves.push(Move::Normal {
@@ -128,13 +149,6 @@ fn get_piece_pseudolegal_moves(
     }
   };
 
-  let is_occupied = |(x, y): (i32, i32)| -> bool {
-    match board.squares[x as usize][y as usize] {
-      SquareContent::Filled(_) => true, // TODO
-      SquareContent::Empty => false,
-    }
-  };
-
   let add_pawn_moves = |moves: &mut Vec<Move>| {
     let sign = match color {
       Color::White => 1,
@@ -144,23 +158,31 @@ fn get_piece_pseudolegal_moves(
       Color::White => (HEIGHT - 1) as i32,
       Color::Black => 0,
     };
+    let start_rank: i32 = match color {
+      Color::White => 1,
+      Color::Black => (HEIGHT - 2) as i32,
+    };
+
+    let add_promo_moves = |origin: (i32, i32), target: (i32, i32), moves: &mut Vec<Move>| {
+      for kind in &[PieceKind::Knight, PieceKind::Bishop, PieceKind::Rook, PieceKind::Queen] {
+        moves.push(Move::Promote {
+          origin: (origin.0 as usize, origin.1 as usize),
+          target: (target.0 as usize, target.1 as usize),
+          kind: *kind,
+        });
+      }
+    };
+
     let push_one_sq = (x, y + sign);
     let push_two_sq = (x, y + 2 * sign);
-    if in_bounds(push_one_sq) && !is_occupied(push_one_sq) {
+    if in_bounds(push_one_sq) && !is_occupied(push_one_sq, board) {
       if y + sign != queen_rank {
         add_normal_move(push_one_sq, moves);
       }
       else {
-        // promotion
-        for kind in &[PieceKind::Knight, PieceKind::Bishop, PieceKind::Rook, PieceKind::Queen] {
-          moves.push(Move::Promote {
-            origin: (x as usize, y as usize),
-            target: (push_one_sq.0 as usize, push_one_sq.1 as usize),
-            kind: *kind,
-          });
-        }
+        add_promo_moves((x, y), push_one_sq, moves);
       }
-      if y == 1 && !is_occupied(push_two_sq) {
+      if y == start_rank && !is_occupied(push_two_sq, board) {
         add_normal_move(push_two_sq, moves);
       }
     }
@@ -168,23 +190,33 @@ fn get_piece_pseudolegal_moves(
     let diag_right_sq = (x + 1, y + sign);
     let diag_left_sq = (x - 1, y + sign);
     if in_bounds(diag_left_sq) {
-      if let Some(piece_color) = check_square_piece(diag_left_sq) {
-        if piece_color != color {
+      if Some(opposite(color)) == check_square_piece(diag_left_sq)
+        || Some(diag_left_sq) == en_passant
+      {
+        if y + sign != queen_rank {
           add_normal_move(diag_left_sq, moves);
+        }
+        else {
+          add_promo_moves((x, y), diag_left_sq, moves);
         }
       }
     }
     if in_bounds(diag_right_sq) {
-      if let Some(piece_color) = check_square_piece(diag_right_sq) {
-        if piece_color != color {
+      if Some(opposite(color)) == check_square_piece(diag_right_sq)
+        || Some(diag_right_sq) == en_passant
+      {
+        if y + sign != queen_rank {
           add_normal_move(diag_right_sq, moves);
+        }
+        else {
+          add_promo_moves((x, y), diag_right_sq, moves);
         }
       }
     }
   };
 
   let add_diagonal_moves = |moves: &mut Vec<Move>| {
-    for xp in (x + 1)..((WIDTH as i32) - 1) {
+    for xp in (x + 1)..(WIDTH as i32) {
       let yp = y - (x - xp);
       if !in_bounds((xp, yp)) {
         break;
@@ -193,7 +225,7 @@ fn get_piece_pseudolegal_moves(
         break;
       }
     }
-    for xp in (x + 1)..((WIDTH as i32) - 1) {
+    for xp in (x + 1)..(WIDTH as i32) {
       let yp = y + (x - xp);
       if !in_bounds((xp, yp)) {
         break;
@@ -223,7 +255,7 @@ fn get_piece_pseudolegal_moves(
   };
 
   let add_cardinal_moves = |moves: &mut Vec<Move>| {
-    for xp in x + 1..(WIDTH as i32) - 1 {
+    for xp in (x + 1)..(WIDTH as i32) {
       if !maybe_add_square((xp, y), moves) {
         break;
       }
@@ -233,7 +265,7 @@ fn get_piece_pseudolegal_moves(
         break;
       }
     }
-    for yp in y + 1..(WIDTH as i32) - 1 {
+    for yp in (y + 1)..(WIDTH as i32) {
       if !maybe_add_square((x, yp), moves) {
         break;
       }
@@ -311,18 +343,55 @@ fn apply_move(m: &Move, bs: &BoardState) -> BoardState {
       }
       squares[origin.0][origin.1] = SquareContent::Empty;
     }
-    // TODO: castling
-    Move::CastleK => {
-      unimplemented!();
+    Move::CastleK(Color::White) => {
+      assert_eq!(WIDTH, 8);
+      let k = squares[KING_FILE][0];
+      let r = squares[KROOK_FILE][0];
+      squares[KROOK_FILE][0] = k;
+      squares[KING_FILE][0] = r;
     }
-    Move::CastleQ => {
-      unimplemented!();
+    Move::CastleK(Color::Black) => {
+      assert_eq!(WIDTH, 8);
+      let k = squares[KING_FILE][HEIGHT - 1];
+      let r = squares[KROOK_FILE][HEIGHT - 1];
+      squares[KROOK_FILE][HEIGHT - 1] = k;
+      squares[KING_FILE][HEIGHT - 1] = r;
+    }
+    Move::CastleQ(Color::White) => {
+      assert_eq!(WIDTH, 8);
+      let k = squares[KING_FILE][0];
+      let r = squares[QROOK_FILE][0];
+      squares[QROOK_FILE][0] = k;
+      squares[KING_FILE][0] = r;
+    }
+    Move::CastleQ(Color::Black) => {
+      assert_eq!(WIDTH, 8);
+      let k = squares[KING_FILE][HEIGHT - 1];
+      let r = squares[QROOK_FILE][HEIGHT - 1];
+      squares[QROOK_FILE][HEIGHT - 1] = k;
+      squares[KING_FILE][HEIGHT - 1] = r;
     }
   }
   return bs2;
 }
 
-fn get_pseudolegal_moves(board: &BoardState, active: Color) -> Vec<Move> {
+fn is_capture(m: &Move, board: &BoardState) -> bool {
+  match m {
+    Move::Normal { origin: _, target } => {
+      return match board.squares[target.0][target.1] {
+        SquareContent::Filled(_) => true,
+        SquareContent::Empty => false,
+      };
+    }
+    _ => {
+      return false;
+    }
+  }
+}
+
+fn get_pseudolegal_moves(
+  board: &BoardState, en_passant: Option<Square>, active: Color,
+) -> Vec<Move> {
   let mut moves = Vec::<Move>::new();
   for (i, row) in board.squares.iter().enumerate() {
     for (j, sq) in row.iter().enumerate() {
@@ -330,7 +399,9 @@ fn get_pseudolegal_moves(board: &BoardState, active: Color) -> Vec<Move> {
         if *color != active {
           continue;
         }
-        moves.extend(get_piece_pseudolegal_moves((i, j), *color, *kind, &board).iter().cloned());
+        moves.extend(
+          get_piece_pseudolegal_moves((i, j), *color, *kind, &board, en_passant).iter().cloned(),
+        );
       }
     }
   }
@@ -338,7 +409,7 @@ fn get_pseudolegal_moves(board: &BoardState, active: Color) -> Vec<Move> {
 }
 
 fn in_check(board: &BoardState, color: Color) -> bool {
-  for m in get_pseudolegal_moves(board, opposite(color)) {
+  for m in get_pseudolegal_moves(board, None, opposite(color)) {
     match m {
       Move::Normal { origin, target } => {
         if let SquareContent::Filled(piece) = board.squares[target.0][target.1] {
@@ -354,7 +425,7 @@ fn in_check(board: &BoardState, color: Color) -> bool {
 }
 
 fn get_legal_moves(gs: &GameState) -> Vec<Move> {
-  return get_pseudolegal_moves(&gs.board, gs.active)
+  let mut moves: Vec<Move> = get_pseudolegal_moves(&gs.board, gs.en_passant, gs.active)
     .iter()
     .filter(|m| {
       let bs2 = apply_move(m, &gs.board);
@@ -362,6 +433,56 @@ fn get_legal_moves(gs: &GameState) -> Vec<Move> {
     })
     .cloned()
     .collect();
+  let check_castle_ok = |rank: usize, rook_file: usize, king_file: usize| -> bool {
+    let (king_target_file, rook_target_file, file1, file2) = if rook_file > king_file {
+      (king_file + 2, king_file + 1, king_file, rook_file)
+    }
+    else {
+      (king_file - 2, king_file - 1, rook_file, king_file)
+    };
+    // obstructed?
+    for x in (file1 + 1)..file2 {
+      if is_occupied((x as i32, rank as i32), &gs.board) {
+        return false;
+      }
+    }
+    // castling in/through check?
+    let (file1, file2) = if king_target_file < king_file {
+      (king_target_file, king_file)
+    }
+    else {
+      (king_file, king_target_file)
+    };
+    for x in file1..(file2 + 1) {
+      let mut bs2 = gs.board.clone();
+      bs2.squares[x][rank] = bs2.squares[king_file][rank];
+      bs2.squares[king_file][rank] = SquareContent::Empty;
+      if in_check(&bs2, gs.active) {
+        return false;
+      }
+    }
+    return true;
+  };
+  // castling
+  match gs.active {
+    Color::White => {
+      if gs.castling.wk && check_castle_ok(0, KROOK_FILE, KING_FILE) {
+        moves.push(Move::CastleK(Color::White));
+      }
+      if gs.castling.wq && check_castle_ok(0, QROOK_FILE, KING_FILE) {
+        moves.push(Move::CastleQ(Color::White));
+      }
+    }
+    Color::Black => {
+      if gs.castling.bk && check_castle_ok(HEIGHT - 1, KROOK_FILE, KING_FILE) {
+        moves.push(Move::CastleK(Color::Black));
+      }
+      if gs.castling.bq && check_castle_ok(HEIGHT - 1, QROOK_FILE, KING_FILE) {
+        moves.push(Move::CastleQ(Color::Black));
+      }
+    }
+  }
+  return moves;
 }
 
 fn parse_fen_board(board_str: &str) -> Result<BoardState, &'static str> {
@@ -582,10 +703,48 @@ mod tests {
 
   #[test]
   fn test_legal_moves() {
+    // position 1
     let gs: GameState =
       parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
-    let m = get_legal_moves(&gs);
-    assert_eq!(m.len(), 20);
+    assert_eq!(get_legal_moves(&gs).len(), 20);
+
+    // position 2
+    let gs: GameState =
+      parse_fen("r3k2r/p1ppqpb1/bn2pnp1/3PN3/1p2P3/2N2Q1p/PPPBBPPP/R3K2R w KQkq -").unwrap();
+    let moves = get_legal_moves(&gs);
+    let captures = moves.iter().filter(|m| is_capture(m, &gs.board)).collect::<Vec<&Move>>();
+    assert_eq!(moves.len(), 48);
+    assert_eq!(captures.len(), 8);
+
+    // position 3
+    let gs: GameState = parse_fen("8/2p5/3p4/KP5r/1R3p1k/8/4P1P1/8 w - -").unwrap();
+    let moves = get_legal_moves(&gs);
+    let captures = moves.iter().filter(|m| is_capture(m, &gs.board)).collect::<Vec<&Move>>();
+    assert_eq!(moves.len(), 14);
+    assert_eq!(captures.len(), 1);
+
+    // position 4
+    let gs: GameState =
+      parse_fen("r3k2r/Pppp1ppp/1b3nbN/nP6/BBP1P3/q4N2/Pp1P2PP/R2Q1RK1 w kq - 0 1").unwrap();
+    let moves = get_legal_moves(&gs);
+    let captures = moves.iter().filter(|m| is_capture(m, &gs.board)).collect::<Vec<&Move>>();
+    assert_eq!(moves.len(), 6);
+    assert_eq!(captures.len(), 0);
+
+    // position 5
+    let gs: GameState =
+      parse_fen("rnbq1k1r/pp1Pbppp/2p5/8/2B5/8/PPP1NnPP/RNBQK2R w KQ - 1 8").unwrap();
+    let moves = get_legal_moves(&gs);
+    println!("Moves: {:?}", moves);
+    assert_eq!(moves.len(), 44);
+
+    // position 6
+    let gs: GameState =
+      parse_fen("r4rk1/1pp1qppp/p1np1n2/2b1p1B1/2B1P1b1/P1NP1N2/1PP1QPPP/R4RK1 w - - 0 10")
+        .unwrap();
+    let moves = get_legal_moves(&gs);
+    println!("Moves: {:?}", moves);
+    assert_eq!(moves.len(), 46);
   }
 }
 
