@@ -1,3 +1,11 @@
+use cairo::{Format, ImageSurface};
+use pixels::{Error, Pixels, SurfaceTexture};
+use winit::{
+  dpi::LogicalSize,
+  event::{DeviceEvent, ElementState, Event, KeyboardInput, ScanCode, WindowEvent},
+  event_loop::{ControlFlow, EventLoop},
+};
+
 const WIDTH: usize = 8;
 const HEIGHT: usize = 8;
 const QROOK_FILE: usize = 0;
@@ -748,6 +756,57 @@ mod tests {
   }
 }
 
-fn main() {
-  // TODO
+fn create_window(
+  title: &str, w: u32, h: u32, scale: f64, event_loop: &EventLoop<()>,
+) -> winit::window::Window {
+  let size = LogicalSize::new((w as f64) * scale, (h as f64) * scale);
+  let window = winit::window::WindowBuilder::new()
+    .with_title(title)
+    .with_inner_size(size)
+    .with_resizable(false)
+    .build(&event_loop)
+    .unwrap();
+  return window;
+}
+
+fn main() -> Result<(), Error> {
+  let event_loop = EventLoop::new();
+  const WINDOW_WIDTH: u32 = 400;
+  const WINDOW_HEIGHT: u32 = 400;
+  let scale: f64 = 1.0;
+  ImageSurface::create(Format::ARgb32, WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32);
+  let window = create_window("gf-chess", WINDOW_WIDTH, WINDOW_HEIGHT, scale, &event_loop);
+  let window_size = window.inner_size();
+
+  let texture = SurfaceTexture::new(window_size.width, window_size.height, &window);
+  let mut buffer = Pixels::new(WINDOW_WIDTH, WINDOW_HEIGHT, texture)?;
+
+  // draw something gray
+  for pix in buffer.get_frame().chunks_exact_mut(4) {
+    let color: [u8; 4] = [0x99, 0x99, 0x99, 0xff];
+    pix.copy_from_slice(&color);
+  }
+
+  event_loop.run(move |event, _, control_flow| {
+    *control_flow = ControlFlow::Poll;
+    match event {
+      Event::RedrawRequested(_) => {
+        if buffer.render().map_err(|e| println!("err {}", e)).is_err() {
+          *control_flow = ControlFlow::Exit;
+          return;
+        }
+      }
+      Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+        *control_flow = ControlFlow::Exit;
+        return;
+      }
+      Event::DeviceEvent {
+        device_id: _,
+        event: DeviceEvent::Key(input),
+      } => {
+        // TODO: do something
+      }
+      _ => (),
+    }
+  });
 }
