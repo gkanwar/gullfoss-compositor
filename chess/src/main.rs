@@ -1,5 +1,8 @@
-use cairo::{Format, ImageSurface};
+use cairo;
 use pixels::{Error, Pixels, SurfaceTexture};
+use std::f64::consts::PI;
+use std::sync::{mpsc, Arc, Mutex};
+use std::thread;
 use winit::{
   dpi::LogicalSize,
   event::{DeviceEvent, ElementState, Event, KeyboardInput, ScanCode, WindowEvent},
@@ -326,7 +329,6 @@ fn get_piece_pseudolegal_moves(
     }
     PieceKind::King => {
       add_king_moves(&mut moves);
-      // TODO: castling
     }
   }
   return moves;
@@ -769,29 +771,120 @@ fn create_window(
   return window;
 }
 
+fn render_piece(ctx: &cairo::Context, piece: Piece, x: f64, y: f64, dx: f64, dy: f64) -> () {
+  // stroke/fill closures
+  let set_fill_color = || {
+    match piece.color {
+      Color::Black => {
+        ctx.set_source_rgb(0.0, 0.0, 0.0);
+      }
+      Color::White => {
+        ctx.set_source_rgb(1.0, 1.0, 1.0);
+      }
+    };
+  };
+  let set_stroke_color = || {
+    match piece.color {
+      Color::Black => {
+        ctx.set_source_rgb(1.0, 1.0, 1.0);
+      }
+      Color::White => {
+        ctx.set_source_rgb(0.0, 0.0, 0.0);
+      }
+    };
+  };
+  let line_width: f64 = 0.006;
+  ctx.set_line_width(line_width);
+  match piece.kind {
+    PieceKind::Pawn => {
+      set_fill_color();
+      ctx.arc(x + dx / 2.0, y + dy / 2.0, 0.25 * dx, -PI, PI);
+      ctx.fill_preserve();
+      set_stroke_color();
+      ctx.stroke();
+    }
+    PieceKind::Knight => {
+      set_fill_color();
+      ctx.arc_negative(x + 0.1 * dx, y + 0.9 * dy, 0.7 * dx, 0.0, -0.375 * PI);
+      ctx.line_to(x + 0.3 * dx, y + 0.6 * dy);
+      ctx.line_to(x + 0.5 * dx, y + 0.5 * dy);
+      ctx.line_to(x + 0.35 * dx, y + 0.9 * dy);
+      ctx.line_to(x + 0.8 * dx, y + 0.9 * dy);
+      ctx.fill_preserve();
+      set_stroke_color();
+      ctx.stroke();
+    }
+    _ => {}
+  }
+}
+
+fn render_full_board(ctx: &cairo::Context, board: &BoardState) -> () {
+  let (dx, dy) = (1.0 / (WIDTH as f64), 1.0 / (HEIGHT as f64));
+  for i in 0..WIDTH {
+    for j in 0..HEIGHT {
+      let square: SquareContent = board.squares[i][j];
+      if (i + j) % 2 == 0 {
+        ctx.set_source_rgb(101.0 / 255.0, 138.0 / 255.0, 170.0 / 255.0);
+      }
+      else {
+        ctx.set_source_rgb(183.0 / 255.0, 218.0 / 255.0, 234.0 / 255.0);
+      }
+      let (x, y) = ((i as f64) * dx, ((HEIGHT - j - 1) as f64) * dy);
+      ctx.rectangle(x, y, dx, dy);
+      ctx.fill();
+      if let SquareContent::Filled(piece) = square {
+        render_piece(ctx, piece, x, y, dx, dy);
+      }
+    }
+  }
+}
+
+fn game_thread(
+  buffer: Arc<Mutex<Pixels>>, mut surface: cairo::ImageSurface, tx: mpsc::Sender<()>,
+) -> () {
+  let gs: GameState =
+    parse_fen("rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1").unwrap();
+
+  let ctx: cairo::Context = cairo::Context::new(&surface);
+  ctx.scale(surface.get_width() as f64, surface.get_height() as f64);
+  render_full_board(&ctx, &gs.board);
+  drop(ctx);
+  buffer.lock().unwrap().get_frame().copy_from_slice(&surface.get_data().unwrap());
+  tx.send(());
+  println!("Game thread end");
+}
+
 fn main() -> Result<(), Error> {
   let event_loop = EventLoop::new();
   const WINDOW_WIDTH: u32 = 400;
   const WINDOW_HEIGHT: u32 = 400;
   let scale: f64 = 1.0;
-  ImageSurface::create(Format::ARgb32, WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32);
   let window = create_window("gf-chess", WINDOW_WIDTH, WINDOW_HEIGHT, scale, &event_loop);
   let window_size = window.inner_size();
 
   let texture = SurfaceTexture::new(window_size.width, window_size.height, &window);
-  let mut buffer = Pixels::new(WINDOW_WIDTH, WINDOW_HEIGHT, texture)?;
+  let buffer = Arc::new(Mutex::new(Pixels::new(WINDOW_WIDTH, WINDOW_HEIGHT, texture)?));
 
   // draw something gray
-  for pix in buffer.get_frame().chunks_exact_mut(4) {
+  for pix in buffer.lock().unwrap().get_frame().chunks_exact_mut(4) {
     let color: [u8; 4] = [0x99, 0x99, 0x99, 0xff];
     pix.copy_from_slice(&color);
   }
 
+  let (tx, rx) = mpsc::channel::<()>();
+
+  let game_buffer = buffer.clone();
+  thread::spawn(move || {
+    let cairo_surface: cairo::ImageSurface =
+      cairo::ImageSurface::create(cairo::Format::ARgb32, WINDOW_WIDTH as i32, WINDOW_HEIGHT as i32)
+        .unwrap();
+    game_thread(game_buffer, cairo_surface, tx);
+  });
   event_loop.run(move |event, _, control_flow| {
     *control_flow = ControlFlow::Poll;
     match event {
       Event::RedrawRequested(_) => {
-        if buffer.render().map_err(|e| println!("err {}", e)).is_err() {
+        if buffer.lock().unwrap().render().map_err(|e| println!("err {}", e)).is_err() {
           *control_flow = ControlFlow::Exit;
           return;
         }
@@ -799,6 +892,11 @@ fn main() -> Result<(), Error> {
       Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
         *control_flow = ControlFlow::Exit;
         return;
+      }
+      Event::MainEventsCleared => {
+        if let Ok(_) = rx.try_recv() {
+          window.request_redraw();
+        }
       }
       Event::DeviceEvent {
         device_id: _,
