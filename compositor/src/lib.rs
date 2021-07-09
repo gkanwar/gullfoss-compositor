@@ -11,7 +11,24 @@ const DEFAULT_SOCK_PATH: &str = "/tmp/gfcomp_sock";
 
 #[derive(Serialize, Deserialize)]
 enum Message {
-  Hello // FORNOW: just a dummy
+  // FORNOW: just a dummy -- could be extended to some sort of versioning in the future
+  Hello,
+  // Server -> Client
+  BufferCreatedEvent(),
+  ResizeEvent {
+    width: usize,
+    height: usize,
+    is_main: bool
+  },
+  Ping,
+  // Client -> Server
+  DamageReport {
+    x: usize,
+    y: usize,
+    dx: usize,
+    dy: usize
+  },
+  Pong
 }
 
 fn check_hello(msg: Message) {
